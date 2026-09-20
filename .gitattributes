@@ -1,0 +1,9 @@
+# Normalise line endings to LF in the repository and on checkout. Without this,
+# core.autocrlf on Windows hands back CRLF and the Makefile recipes, Dockerfile
+# and shell fragments break in ways that do not reproduce on Linux or in CI.
+* text=auto eol=lf
+
+# Keep binary assets untouched.
+*.png binary
+*.jpg binary
+*.gif binary

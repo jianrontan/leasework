@@ -1,0 +1,239 @@
+# No top-level `version:` key -- obsolete in Compose v2+ and just emits a warning.
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:3.9.0
+  # Same cluster id on every broker -- KRaft brokers refuse to form a quorum
+  # otherwise. Any fixed 16-byte base64 string works; this is the one from
+  # Kafka's own KRaft quickstart docs.
+  environment: &kafka-common-env
+    CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+    # All three voters listed on every node, so any one of them can win the
+    # controller election if another is down.
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    # RF=3 / min-ISR=2 on every internal topic: the cluster keeps taking
+    # writes with one broker down, which is the point of running three.
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    # Topics are created explicitly (see `make topics`) so partition counts
+    # are a deliberate choice, not whatever the first producer happened to hit.
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    # apache/kafka's storage-format step (KafkaConfig.validateValues, via
+    # StorageTool) computes an *effective* advertised.listeners for every
+    # listener named in `listeners` -- including CONTROLLER -- by falling
+    # back to the `listeners` entry (0.0.0.0) whenever a listener has no
+    # explicit entry in `advertised.listeners`. For a combined broker+
+    # controller KRaft node that fallback trips the "nonroutable
+    # meta-address 0.0.0.0" check before the broker ever starts, even
+    # though PLAINTEXT/PLAINTEXT_HOST are advertised correctly. Each
+    # service below must add its own routable CONTROLLER://host:9093
+    # entry to KAFKA_ADVERTISED_LISTENERS to satisfy that check.
+    #
+    # This image also defaults log.dirs to /tmp/kraft-combined-logs, not
+    # /var/lib/kafka/data (that path is a Confluent-image convention) --
+    # point it at the mounted volume explicitly so broker data actually
+    # lands on the named volume and survives restarts / is wiped by
+    # `make clean`.
+    KAFKA_LOG_DIRS: /var/lib/kafka/data
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    retries: 10
+    start_period: 30s
+  restart: unless-stopped
+
+services:
+  kafka1:
+    <<: *kafka-common
+    hostname: kafka1
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 1
+      # PLAINTEXT is how other containers on the compose network reach this
+      # broker; PLAINTEXT_HOST is a second listener just for tooling running
+      # on the Windows host, advertised on a per-broker host port since they
+      # all share localhost.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092,PLAINTEXT_HOST://localhost:19092,CONTROLLER://kafka1:9093
+    ports:
+      - "19092:9094"
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+
+  kafka2:
+    <<: *kafka-common
+    hostname: kafka2
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092,PLAINTEXT_HOST://localhost:29092,CONTROLLER://kafka2:9093
+    ports:
+      - "29092:9094"
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+
+  kafka3:
+    <<: *kafka-common
+    hostname: kafka3
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092,PLAINTEXT_HOST://localhost:39092,CONTROLLER://kafka3:9093
+    ports:
+      - "39092:9094"
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: leasework
+      POSTGRES_PASSWORD: leasework
+      POSTGRES_DB: leasework
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leasework -d leasework"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: api
+    environment:
+      LEASEWORK_LOG_LEVEL: info
+      LEASEWORK_OPS_ADDR: ":8080"
+      LEASEWORK_POSTGRES_DSN: "postgres://leasework:leasework@postgres:5432/leasework?sslmode=disable"
+      LEASEWORK_REDIS_ADDR: "redis:6379"
+      LEASEWORK_KAFKA_BROKERS: "kafka1:9092,kafka2:9092,kafka3:9092"
+      LEASEWORK_SHUTDOWN_TIMEOUT: "10s"
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: worker
+    environment:
+      LEASEWORK_LOG_LEVEL: info
+      LEASEWORK_OPS_ADDR: ":9101"
+      LEASEWORK_POSTGRES_DSN: "postgres://leasework:leasework@postgres:5432/leasework?sslmode=disable"
+      LEASEWORK_REDIS_ADDR: "redis:6379"
+      LEASEWORK_KAFKA_BROKERS: "kafka1:9092,kafka2:9092,kafka3:9092"
+      LEASEWORK_SHUTDOWN_TIMEOUT: "10s"
+    # No published port: Prometheus scrapes this inside the compose network,
+    # and `make scale` will run several replicas that can't all bind the
+    # same host port anyway.
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: scheduler
+    environment:
+      LEASEWORK_LOG_LEVEL: info
+      LEASEWORK_OPS_ADDR: ":9102"
+      LEASEWORK_POSTGRES_DSN: "postgres://leasework:leasework@postgres:5432/leasework?sslmode=disable"
+      LEASEWORK_REDIS_ADDR: "redis:6379"
+      LEASEWORK_KAFKA_BROKERS: "kafka1:9092,kafka2:9092,kafka3:9092"
+      LEASEWORK_SHUTDOWN_TIMEOUT: "10s"
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.0
+    environment:
+      # Anonymous admin access so the local demo needs no login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
+  redis-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
