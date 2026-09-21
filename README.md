@@ -119,6 +119,8 @@ Environment variables, all prefixed `LEASEWORK_`:
 - [docs/design-decisions.md](docs/design-decisions.md) — what was decided, what it beat, and
   what it costs.
 - [docs/plan.md](docs/plan.md) — the phase sequence, from scaffold to Kubernetes autoscaling.
+- [docs/failure-modes.md](docs/failure-modes.md) — every point a worker can die, what recovers
+  it, and what the handler must guarantee for itself.
 
 ## Known gaps
 
