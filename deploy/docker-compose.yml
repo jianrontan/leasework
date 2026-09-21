@@ -120,6 +120,25 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # migrate is a one-shot job: it applies the schema and exits, and every
+  # long-running service below depends on it with service_completed_successfully
+  # so it runs to completion before api, worker or scheduler starts. That
+  # gives schema creation exactly one owner instead of every service racing
+  # to migrate the schema itself.
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: migrate
+    environment:
+      LEASEWORK_LOG_LEVEL: info
+      LEASEWORK_POSTGRES_DSN: "postgres://leasework:leasework@postgres:5432/leasework?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ..
@@ -146,6 +165,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   worker:
@@ -175,6 +196,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   scheduler:
@@ -201,6 +224,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   prometheus:

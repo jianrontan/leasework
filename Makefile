@@ -1,4 +1,4 @@
-.PHONY: help up down clean logs ps topics scale smoke tidy build test lint fmt
+.PHONY: help up down clean logs ps topics scale smoke migrate tidy build test lint fmt
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
@@ -46,10 +46,25 @@ N := 1
 scale: ## Scale the worker service, e.g. `make scale N=3` (default N=1)
 	$(COMPOSE) up -d --scale worker=$(N) --no-recreate
 
-smoke: ## Curl /healthz and /readyz on the api and assert they return OK
-	curl -fsS http://localhost:8080/healthz
-	curl -fsS http://localhost:8080/readyz
-	@echo "smoke OK"
+smoke: ## Submit a job through the api and poll until the worker completes it
+	curl -fsS http://localhost:8080/healthz > /dev/null
+	curl -fsS http://localhost:8080/readyz > /dev/null
+	job_id=$$(curl -fsS -X POST http://localhost:8080/jobs \
+		-H 'Content-Type: application/json' \
+		-d '{"type":"noop","payload":{}}' \
+		| python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])'); \
+	if [ -z "$$job_id" ]; then echo "smoke FAILED: no job_id in submit response"; exit 1; fi; \
+	status=""; \
+	for i in $$(seq 1 30); do \
+		status=$$(curl -fsS http://localhost:8080/jobs/$$job_id | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'); \
+		if [ "$$status" = "succeeded" ]; then echo "smoke OK"; exit 0; fi; \
+		sleep 1; \
+	done; \
+	echo "smoke FAILED: job $$job_id last observed status: $$status"; \
+	exit 1
+
+migrate: ## Run the migrate service on its own, applying pending schema changes
+	$(COMPOSE) run --rm migrate
 
 tidy: ## Run `go mod tidy` via Docker
 	$(GO_DOCKER) go mod tidy

@@ -2,12 +2,18 @@
 
 Every point where a worker can die, what recovers it, and what the user observes.
 
-The governing rule: **every failure must produce a repeat, a delay, or nothing — never a
+The governing rule: **every failure must produce a repeat, a delay, or nothing, never a
 loss.** Losses are silent and undebuggable; repeats are visible and can be neutralised. Where
 this document says a failure is "accepted", it means accepted deliberately, with the mechanism
 that bounds it named.
 
 Design rationale for the mechanisms themselves lives in [design-decisions.md](design-decisions.md).
+
+**What exists today (Phase 1):** the outbox and its produce-then-mark ordering, and the
+worker's write-then-commit ordering. The lease, the fence token and the reaper do not exist
+yet, so crash points C, D and F currently resolve by re-executing the job rather than by being
+fenced. Phases 3 and 4 close that. This document describes the finished design, not the
+current state.
 
 ---
 
@@ -34,7 +40,7 @@ Two properties of this ordering carry most of the safety:
 
 ## Crash points
 
-### A — Before the claim (between 1 and 2)
+### A: Before the claim (between 1 and 2)
 
 Nothing has happened anywhere: no lease, no Postgres change, no commit.
 
@@ -43,7 +49,7 @@ normally.
 
 **Effect: no-op.** Indistinguishable from the message never having been read.
 
-### B — Claimed but not stamped (between 2 and 3)
+### B: Claimed but not stamped (between 2 and 3)
 
 Redis holds a lease with fence F, but the `jobs` row still says `queued` and knows nothing
 about it.
@@ -62,7 +68,7 @@ redelivered message is claimed fresh with a new fence.
 > Kafka redelivery and the lease reaper cover overlapping but different ground. Neither alone
 > is sufficient, which is why both exist.
 
-### C — Mid-execution (during 4)
+### C: Mid-execution (during 4)
 
 Postgres says `running` with fence F and a lease expiry. The heartbeat stops.
 
@@ -70,10 +76,10 @@ Both safety nets fire. The lease expires; the reaper finds `running` plus an exp
 requeues. The uncommitted offset also causes redelivery. The job is re-executed from the
 beginning under a new fence.
 
-**Effect: retry.** Any external side effect completed before the crash has already happened —
+**Effect: retry.** Any external side effect completed before the crash has already happened:
 see [Handler contract](#handler-contract).
 
-### D — Work done, result not written (between 4 and 5)
+### D: Work done, result not written (between 4 and 5)
 
 The job genuinely ran and there is no record of it.
 
@@ -81,7 +87,7 @@ From the system's perspective this is indistinguishable from C: Postgres still s
 the lease still expires, the offset is still uncommitted. It is retried, and the work happens
 **twice**.
 
-**Effect: duplicate execution. Not solved — bounded.**
+**Effect: duplicate execution. Not solved: bounded.**
 
 This is irreducible. The handler's effect and the database write are two separate operations
 across a process boundary and cannot be made atomic. It is the reason this project claims
@@ -89,7 +95,7 @@ at-least-once delivery rather than exactly-once, and the reason handlers must be
 
 Fencing does **not** help here. Fencing protects the database row; it cannot un-send an email.
 
-### E — Written but not committed (between 5 and 6)
+### E: Written but not committed (between 5 and 6)
 
 Kafka still points at offset N and redelivers it.
 
@@ -103,14 +109,14 @@ status, skips execution and commits the offset.
 > no race to lose. Lease ownership *can* change underneath a reader, which is exactly why that
 > case needs a fenced write instead of a check.
 
-### F — Rebalance mid-job
+### F: Rebalance mid-job
 
 Not a crash. The worker is healthy, which is what makes this the interesting case.
 
 A consumer must call `poll()` at least every `max.poll.interval.ms`. A handler that runs longer
 blocks the poll loop, Kafka concludes the worker is gone and **evicts it from the group while
 it is still working**. The partition is reassigned, the new owner reads offset N, and both
-copies run concurrently. When the original finishes, its commit is rejected — it is no longer a
+copies run concurrently. When the original finishes, its commit is rejected: it is no longer a
 group member.
 
 Its fenced write lands on a row whose fence has since advanced, affects **0 rows**, and
@@ -119,10 +125,10 @@ Its fenced write lands on a row whose fence has since advanced, affects **0 rows
 **Effect: concurrent duplicate execution, exactly one recorded outcome.**
 
 This is a genuine duplicate produced by ordinary configuration rather than an artificial kill,
-which is why `make demo-fence` reproduces it this way. A manufactured duplicate — calling the
-handler twice in a loop — proves nothing.
+which is why `make demo-fence` reproduces it this way. A manufactured duplicate, calling the
+handler twice in a loop, proves nothing.
 
-### G — Redis unavailable
+### G: Redis unavailable
 
 No claims can be granted, so workers stall. Nothing is lost: Postgres holds the truth and Kafka
 holds the messages. Work resumes on recovery.
@@ -136,11 +142,11 @@ reliable "who is newer" signal, which is the single property fencing depends on.
 This is the concrete reason Redis runs with `--appendonly yes`. It is not generic durability
 hygiene; it protects the one piece of Redis state that must never go backwards.
 
-### H — Scheduler down
+### H: Scheduler down
 
 The outbox relay, due-job promoter and lease reaper all stop.
 
-New submissions are still durably accepted — the API writes the job and outbox rows in one
+New submissions are still durably accepted: the API writes the job and outbox rows in one
 transaction and returns. They simply are not published until the scheduler returns. In-flight
 work continues; expired leases are not reaped until it returns.
 
@@ -185,13 +191,13 @@ heartbeats happily forever while its partition never advances.
 
 Three cases survive any heartbeat frequency:
 
-1. **Heartbeat on the wrong thread** — above. Moving it onto the job thread fixes that but
+1. **Heartbeat on the wrong thread**: above. Moving it onto the job thread fixes that but
    reintroduces a deadline for any single uninterruptible operation.
-2. **Network partition** — the worker is healthy and progressing, but the path to Kafka is cut.
+2. **Network partition**: the worker is healthy and progressing, but the path to Kafka is cut.
    Heartbeats are sent and never arrive. Kafka evicts; the new owner starts the job; the
    original keeps working, unaware. Heartbeating cannot fix this because the heartbeat is
    precisely what is broken.
-3. **Whole-process pause** — stop-the-world GC, VM migration, `SIGSTOP`, a closed laptop lid.
+3. **Whole-process pause**: stop-the-world GC, VM migration, `SIGSTOP`, a closed laptop lid.
    The heartbeat thread pauses too. The process resumes mid-job with no idea time has passed.
 
 Underneath all three: **over an unreliable network, a crashed process is indistinguishable from
@@ -210,7 +216,7 @@ Hence the division of labour:
 - **Heartbeating is an optimisation.** It makes duplicates rare.
 - **Fencing is a correctness mechanism.** It makes duplicates harmless.
 
-They are not substitutes. Heartbeat only, and the bad case is rare — which at volume means
+They are not substitutes. Heartbeat only, and the bad case is rare, which at volume means
 daily. Fence only, and every slow job triggers an eviction and constant double work.
 
 ---
@@ -227,10 +233,10 @@ are deduplicated.
 
 So handlers must be **idempotent**, which shows up in two distinct places:
 
-- **Inbound** — a client retrying `POST /jobs` after a timeout. Handled by the
+- **Inbound**: a client retrying `POST /jobs` after a timeout. Handled by the
   `Idempotency-Key` header and a unique constraint: the same key returns the existing job id;
   the same key with a different body returns 409.
-- **Outbound** — a handler retrying a call to a third party. The handler must supply that
+- **Outbound**: a handler retrying a call to a third party. The handler must supply that
   API's own idempotency key. The platform cannot do this on its behalf.
 
 Prefer naturally idempotent operations (`SET balance = 100` over `balance = balance + 10`)
@@ -249,7 +255,7 @@ nothing is lost.
 
 Legitimate alternatives, both honest to state:
 
-- Redis Sentinel or Cluster for failover — currently a [known gap](design-decisions.md#known-gaps).
+- Redis Sentinel or Cluster for failover: currently a [known gap](design-decisions.md#known-gaps).
 - Move the fence counter to a Postgres `SEQUENCE`, which is durable and monotonic by
   construction, keeping only the lease in Redis. This deletes the counter-reset hazard entirely
   at the cost of more load on Postgres.

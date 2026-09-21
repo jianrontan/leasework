@@ -49,7 +49,7 @@ UPDATE jobs SET status = $3 WHERE id = $1 AND fence = $2
 ```
 
 A stale worker's write affects zero rows and the worker learns it lost. The stalled process is
-not stopped — it cannot reliably be — its output is made powerless at the last gate.
+not stopped (it cannot reliably be); its output is made powerless at the last gate.
 
 `leasework_fence_rejections_total` is the observable proof: non-zero means the mechanism
 caught a real double-execution.
@@ -114,7 +114,7 @@ it. Good first post-v1 extension.
 Named here deliberately. Naming them is what makes everything else credible.
 
 - Single `scheduler` replica, no leader election.
-- Single Redis instance — no Sentinel, no Cluster.
+- Single Redis instance: no Sentinel, no Cluster.
 - No Kafka transactions / EOS.
 - No RBAC beyond API keys (hashed at rest).
 - `kind` is not a real cluster: no CNI, storage or upgrade experience.

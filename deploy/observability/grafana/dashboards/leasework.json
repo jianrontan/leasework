@@ -1,8 +1,8 @@
 {
   "id": null,
   "uid": "leasework-overview",
-  "title": "leasework — overview",
-  "description": "Phase 0: confirms every service is up and scraped. No leasework_* panels yet -- none of those metrics exist until later phases.",
+  "title": "leasework overview",
+  "description": "Phase 0 panels confirm every service is up and scraped. Phase 1 adds the first leasework_* panel, jobs submitted and executed per second.",
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -75,6 +75,25 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 4,
+      "title": "Jobs per second",
+      "type": "timeseries",
+      "datasource": null,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "expr": "rate(leasework_jobs_submitted_total[1m])",
+          "legendFormat": "submitted ({{instance}})",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(leasework_jobs_executed_total[1m])",
+          "legendFormat": "executed {{outcome}} ({{instance}})",
+          "refId": "B"
+        }
+      ]
     }
   ]
 }
