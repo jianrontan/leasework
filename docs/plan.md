@@ -100,6 +100,10 @@ looks like a bug in the screenshot. `jobs.dlq` gets 3.
 job type: it is low-cardinality, so you get hot partitions and one popular type serialising
 behind itself.
 
+**Postgres: one instance until Phase 7, then two shards.** Two is enough to learn routing,
+cross-shard uniqueness and partial failure, and the laptop already runs three Kafka brokers.
+Three is a config change.
+
 **kind with 3 nodes**, not the default 1. One config line, and it makes drains, `cordon`,
 rescheduling and anti-affinity real instead of invisible.
 
@@ -116,7 +120,7 @@ thing at a time.
 
 **Phase 0: Scaffold.** Module init, Compose (3 Kafka brokers, Redis with `--appendonly yes`,
 Postgres), env config, `log/slog` JSON, Makefile. Every binary gets `/healthz`, `/readyz`,
-`/metrics` and SIGTERM handling from the first commit, not Phase 7. Prometheus scrapes and
+`/metrics` and SIGTERM handling from the first commit, not Phase 8. Prometheus scrapes and
 Grafana provisions from files, day one.
 
 **Phase 1: Walking skeleton with the outbox.** `POST /jobs` into one transaction writing job +
@@ -157,7 +161,25 @@ failures retry. Cancel sets status in Postgres (you cannot unsend a Kafka messag
 worker checks before executing and on each heartbeat, cancelling the handler's context
 cooperatively.
 
-**Phase 7: Observability and SLO.** Full metric set:
+**Phase 7: Sharding.** Split Postgres into two shards. This phase exists to learn sharding,
+not because the load requires it: one Postgres handles far more than this project generates,
+and design-decisions.md says so. It comes after Phase 6 because the interesting part of
+sharding is what breaks, and `Idempotency-Key`, listing, the reaper and the promoter have to
+exist before they can break.
+
+A job and its outbox row always live on the same shard, so the outbox stays one local
+transaction and the fenced write still touches one row. The shard is chosen by the
+`Idempotency-Key` when the client sends one, so the same key always lands on the same shard
+and the ordinary unique constraint still works; otherwise by hashing the new job id. The shard
+number is embedded in the job id (`s1-<uuid>`), so every later lookup goes straight to the
+right shard without asking the others. `GET /jobs` queries every shard and merges by
+`(created_at, id)`, with a cursor that works across shards. The relay, reaper and promoter run
+one loop per shard, each with its own `LISTEN`. `migrate` applies the schema to every shard
+and reports per shard. All of it stays inside `internal/store`, the only package that talks
+to Postgres. The shard count is fixed; changing it means moving rows, which stays a known gap.
+**Exit: `make smoke` green on two shards, with jobs observed on both.**
+
+**Phase 8: Observability and SLO.** Full metric set:
 
 ```
 leasework_jobs_submitted_total{type}
@@ -167,7 +189,7 @@ leasework_scheduling_delay_seconds{type}           histogram   <- the SLI
 leasework_lease_expirations_total
 leasework_fence_rejections_total                   <- the star metric
 leasework_retries_total / leasework_dlq_total
-leasework_outbox_pending                           gauge
+leasework_outbox_pending{shard}                    gauge
 leasework_scheduler_last_tick_timestamp_seconds    gauge
 leasework_consumer_lag{partition}                  gauge
 leasework_jobs_inflight                            gauge
@@ -185,12 +207,14 @@ Then alert rules (`SchedulerStalled`, `OutboxBacklog`, `ConsumerLagHigh`, `SLOBu
 `DLQNonZero`) and `docs/runbook.md` with one section per alert. **This is the tier that beats
 the reference project, which has dashboards and no alerting. Do not let it slip for time.**
 
-**Phase 8: Load, chaos, numbers.** Throughput at 1/3/6 workers; p50/p95/p99 scheduling delay;
+**Phase 9: Load, chaos, numbers.** Throughput at 1/3/6 workers; p50/p95/p99 scheduling delay;
 backlog drain rate. Chaos, each with recovery behaviour and measured time: kill a worker
-mid-job, kill Redis, **kill one Kafka broker** (meaningful at RF=3), stop the scheduler. README
-gets real numbers and dashboard screenshots.
+mid-job, kill Redis, **kill one Kafka broker** (meaningful at RF=3), stop the scheduler, and
+**kill one Postgres shard**: jobs routed to it stall while the other shard keeps flowing, a
+partial outage a single database cannot show. README gets real numbers and dashboard
+screenshots.
 
-**Phase 9: Kubernetes.** 3-node kind. Deployments with probes and resource limits, PDB,
+**Phase 10: Kubernetes.** 3-node kind. Deployments with probes and resource limits, PDB,
 `preStop` plus `terminationGracePeriodSeconds` wired to the Phase 3 graceful drain, scheduler
 pinned to one replica and explicitly excluded from autoscaling. KEDA scales workers on
 consumer lag: load up, lag up, replicas up, lag drains. Then drain a node and watch pods
@@ -209,3 +233,7 @@ reschedule. That demo is the entire reason this phase exists.
    does not have it.
 5. **"Have you operated Kafka?"**: "As a client, at depth. I have run three brokers at RF=3
    and killed one. I have not run a production cluster." Bluffing is not the move.
+6. **"Why did you shard?"**: "To learn it, and I say so in the design doc. At this load one
+   Postgres is plenty. What I can show is what sharding breaks: uniqueness across shards,
+   listing across shards, and partial outages, plus how each one is handled." Claiming a
+   scaling need that was not there is the fastest way to lose the room.

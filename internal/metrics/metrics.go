@@ -6,7 +6,7 @@
 //
 // This is deliberately the full metric set for Phase 1, not a starting
 // point: the complete inventory of counters, histograms and gauges leasework
-// eventually needs is Phase 7's job. Adding metrics now that nothing
+// eventually needs is Phase 8's job. Adding metrics now that nothing
 // populates would just be noise on the /metrics output.
 package metrics
 

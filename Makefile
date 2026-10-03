@@ -53,7 +53,7 @@ ps: ## List running services
 # MSYS_NO_PATHCONV=1 for the same reason as GO_DOCKER above: Git Bash would
 # otherwise rewrite the in-container /opt/kafka/... path into a Windows one.
 # 12 partitions on jobs.ready caps worker parallelism for the autoscaling
-# demo in Phase 9; see docs/plan.md.
+# demo in Phase 10; see docs/plan.md.
 topics: ## Create Kafka topics (safe to re-run)
 	MSYS_NO_PATHCONV=1 $(COMPOSE) exec -T kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
 		--create --if-not-exists --topic jobs.ready --partitions 12 --replication-factor 3

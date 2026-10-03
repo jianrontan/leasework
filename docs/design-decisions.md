@@ -98,6 +98,43 @@ class plus starvation handling, and it triples the surface area of the autoscali
 removed from the API surface entirely rather than left as a README bullet with nothing behind
 it. Good first post-v1 extension.
 
+## Sharding is a learning exercise, and it comes late
+
+One Postgres instance handles far more than this project will ever generate, so sharding is
+not here because the load demands it. It is here for the same reason Kafka and Redis are: it
+teaches mechanisms that can be demonstrated, namely routing by key, uniqueness across shards,
+queries that span shards, and partial failure. Claiming a scaling need that does not exist
+would undo the credibility the rest of this document is built on, so this section says it
+plainly.
+
+It lands as Phase 7, after the features it affects already exist. The interesting part of
+sharding is what breaks, and `Idempotency-Key`, listing, the reaper and the promoter have to
+exist before they can break. Sharding a working system is also how it happens in practice.
+
+**What survives, and why.** A job and its outbox row are always written to the same shard, so
+the outbox remains one local transaction and the fenced terminal write still touches exactly
+one row. The fence counter lives in Redis, outside Postgres, so sharding does not touch it.
+Postgres remains the only source of truth: sharding splits it, it does not demote it.
+
+**What breaks, and the fix for each:**
+
+| Breaks | Fix |
+|---|---|
+| `Idempotency-Key` uniqueness. A unique constraint only covers one database, and the key arrives before any job id exists. | The key chooses the shard. The same key always hashes to the same shard, so a per-shard unique constraint is enough. |
+| Finding a job by id without asking every shard. | The shard number is embedded in the job id (`s1-<uuid>`), so routing is reading a prefix, not a lookup. |
+| Listing with pagination. | Query every shard, merge by `(created_at, id)`, and make the cursor a position in that merged order. |
+| The relay, reaper and promoter. | One loop per shard, each with its own `LISTEN`. |
+| Migrations. | `migrate` applies every shard and reports per shard, so a partial failure is visible rather than silent. |
+
+Cross-shard ordering trusts that the shards' clocks roughly agree. That is fine for a listing
+and not something to build correctness on.
+
+**What it newly makes possible:** partial outages. With one shard down, jobs routed to it stall
+while jobs on the other keep flowing. Phase 9 measures exactly that.
+
+**What it costs:** a fixed shard count. Changing it means moving existing rows to their new
+shards, which stays a known gap.
+
 ---
 
 ## Deliberately cut
@@ -119,3 +156,4 @@ Named here deliberately. Naming them is what makes everything else credible.
 - No RBAC beyond API keys (hashed at rest).
 - `kind` is not a real cluster: no CNI, storage or upgrade experience.
 - No recurring schedules.
+- Fixed shard count once sharded (Phase 7): resharding means moving rows.
