@@ -2,17 +2,35 @@
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-# Go is not installed on this machine, so every Go target below runs inside
-# a throwaway golang:1.25 container with the repo bind-mounted at /src.
-# Swap these for a local `go` invocation once Go is installed here.
+# Go targets use a local `go` when one is on PATH, and otherwise run inside a
+# throwaway golang:1.25 container with the repo bind-mounted at /src, so they
+# still work on a machine with only Docker. Force the container with, for
+# example, `make test GO_LOCAL=`. Either way the toolchain should be Go 1.25 to
+# match CI and the Dockerfile: a newer local Go lets in dependencies that need
+# a newer release, which build fine here and then break in CI.
+#
+# Only the presence of `go` is tested, never the path it resolves to. On
+# Windows that path contains a space (Program Files) and would break the
+# command if used directly.
 #
 # Debian-based golang:1.25, not -alpine: `go test -race` requires cgo, and the
 # alpine image ships with CGO_ENABLED=0 and no C compiler. Race detection is
 # not optional on a project whose correctness argument is about concurrency.
+# A local toolchain needs a C compiler on PATH for the same reason.
+#
 # MSYS_NO_PATHCONV=1 stops Git Bash on Windows rewriting the container-side
 # paths (/src) into Windows paths before docker ever sees them. Harmless on
 # Linux and macOS, where the variable is simply ignored.
+GO_LOCAL := $(shell command -v go 2>/dev/null)
 GO_DOCKER := MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)":/src -w /src golang:1.25
+
+ifeq ($(GO_LOCAL),)
+GO := $(GO_DOCKER) go
+GOFMT := $(GO_DOCKER) gofmt
+else
+GO := go
+GOFMT := gofmt
+endif
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -66,17 +84,17 @@ smoke: ## Submit a job through the api and poll until the worker completes it
 migrate: ## Run the migrate service on its own, applying pending schema changes
 	$(COMPOSE) run --rm migrate
 
-tidy: ## Run `go mod tidy` via Docker
-	$(GO_DOCKER) go mod tidy
+tidy: ## Run `go mod tidy`
+	$(GO) mod tidy
 
-build: ## Run `go build ./...` via Docker
-	$(GO_DOCKER) go build ./...
+build: ## Run `go build ./...`
+	$(GO) build ./...
 
-test: ## Run `go test ./... -race` via Docker
-	$(GO_DOCKER) go test ./... -race
+test: ## Run `go test ./... -race`
+	$(GO) test ./... -race
 
-lint: ## Run `go vet ./...` via Docker
-	$(GO_DOCKER) go vet ./...
+lint: ## Run `go vet ./...`
+	$(GO) vet ./...
 
-fmt: ## Run `gofmt -l .` via Docker (lists unformatted files)
-	$(GO_DOCKER) gofmt -l .
+fmt: ## Run `gofmt -l .` (lists unformatted files)
+	$(GOFMT) -l .

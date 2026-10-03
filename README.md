@@ -75,8 +75,11 @@ for a few seconds. Wipe Kafka and you replay from Postgres. Wipe Postgres and wo
 
 ## Running it
 
-Requires Docker. Go is only needed if you want to build outside a container: the `make`
-targets shell out to a `golang` image, so a local toolchain is optional.
+Requires Docker. A local Go toolchain is optional: the Go targets (`build`, `test`, `lint`,
+`fmt`, `tidy`) use `go` when it is on your PATH and otherwise run inside a `golang:1.25`
+container. If you install Go, use 1.25 to match CI and the Dockerfile. A newer release lets in
+dependencies that need it, which build locally and then fail in CI. `go test -race` needs cgo,
+so a local toolchain also needs a C compiler on PATH.
 
 ```bash
 make up
