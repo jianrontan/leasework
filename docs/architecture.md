@@ -8,7 +8,7 @@
 ```mermaid
 flowchart TB
     client(["Client"])
-    ingress["ingress-nginx<br/>Phase 10"]:::planned
+    gateway["Gateway API entry point<br/>Envoy Gateway, Phase 10"]:::planned
 
     subgraph app["Application: Docker Compose today, Kubernetes pods in Phase 10"]
         migrate["migrate<br/>creates schema, then exits"]:::done
@@ -29,8 +29,8 @@ flowchart TB
     end
 
     client -->|"today: localhost:8080"| api
-    client -.->|"Phase 10"| ingress
-    ingress -.-> api
+    client -.->|"Phase 10"| gateway
+    gateway -.->|"HTTPRoute: /jobs"| api
 
     migrate -->|"runs first"| pg
     api -->|"job + outbox row, one transaction"| pg
@@ -94,7 +94,7 @@ than a loss. [failure-modes.md](failure-modes.md) walks through each crash point
 | Prometheus and Grafana | Scrape `/metrics`, draw the dashboard | Built, three job metrics | 0, 1 |
 | Full metric set, alert rules, SLO | Say when the system is breaking its promise | Planned | 8 |
 | Load and chaos tests | Measure throughput; kill brokers, Redis, a shard | Planned | 9 |
-| Kubernetes, ingress-nginx, KEDA | Pods, an entry point, autoscaling on consumer lag | Planned | 10 |
+| Kubernetes, Gateway API, KEDA | Pods, an entry point (Envoy Gateway), autoscaling on consumer lag | Planned | 10 |
 
 ---
 
@@ -105,7 +105,8 @@ than a loss. [failure-modes.md](failure-modes.md) walks through each crash point
 workers, and Prometheus finds every worker replica through Docker's DNS.
 
 **Phase 10: Kubernetes.** The same containers run as pods on a three-node `kind` cluster.
-`ingress-nginx` becomes the entry point in front of `api`, and KEDA adds or removes worker pods
+Traffic enters through the Gateway API, implemented by Envoy Gateway: a `Gateway` is the entry
+point and an `HTTPRoute` sends `/jobs` to `api`. KEDA adds or removes worker pods
 based on Kafka consumer lag. The scheduler stays at exactly one replica, since its loops must not
 run twice.
 

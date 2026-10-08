@@ -220,7 +220,9 @@ screenshots.
 
 **Phase 10: Kubernetes.** 3-node kind. Deployments with probes and resource limits, PDB,
 `preStop` plus `terminationGracePeriodSeconds` wired to the Phase 3 graceful drain, scheduler
-pinned to one replica and explicitly excluded from autoscaling. KEDA scales workers on
+pinned to one replica and explicitly excluded from autoscaling. Traffic enters through the
+Gateway API, implemented by Envoy Gateway: a `Gateway` as the entry point and an `HTTPRoute`
+sending `/jobs` to `api`. KEDA scales workers on
 consumer lag: load up, lag up, replicas up, lag drains. Then drain a node and watch pods
 reschedule. That demo is the entire reason this phase exists.
 

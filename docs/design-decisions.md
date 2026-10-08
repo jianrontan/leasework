@@ -135,13 +135,28 @@ while jobs on the other keep flowing. Phase 9 measures exactly that.
 **What it costs:** a fixed shard count. Changing it means moving existing rows to their new
 shards, which stays a known gap.
 
+## The Kubernetes entry point is the Gateway API
+
+Traffic into the cluster needs a front door that routes requests to the right service and
+spreads them across replicas, and keeps doing so as pods come and go. For years the default
+was ingress-nginx, which implements the older Ingress API. It was retired on 24 March 2026 and
+has had no releases, bug fixes or security patches since, and the Ingress API itself is no
+longer being developed.
+
+Phase 10 therefore uses the Gateway API, the Kubernetes replacement, implemented by Envoy
+Gateway. A `Gateway` object is the entry point, owned by whoever runs the cluster. An
+`HTTPRoute` holds the routing rules, owned by the application: here, `/jobs` goes to `api`.
+Features that used to live in controller-specific annotations, such as timeouts, header
+matching and traffic splitting, are part of the standard instead. That annotation escape hatch
+is part of why ingress-nginx became a security problem: it accepted raw nginx configuration.
+
 ---
 
 ## Deliberately cut
 
 | Cut | Why |
 |---|---|
-| nginx | ingress-nginx in the Kubernetes tier tells the same load-balancing story for free. |
+| Standalone nginx | In front of Docker Compose it would balance a single `api`, so it teaches nothing. Kubernetes traffic enters through the Gateway API instead (Phase 10). |
 | Terraform + cloud deploy | READMEs get read; live URLs do not. A running Kafka cluster is a recurring bill. |
 | Cron / recurring schedules | Misfire policy plus DST is its own subsystem. Ship one-shot delays. |
 | Priority | See above. |
