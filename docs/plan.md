@@ -118,6 +118,10 @@ painful on Windows), `go-redis` v9, `pgx` + `goose`, stdlib `net/http`,
 Each phase ends runnable. The ordering exists so you are never debugging more than one new
 thing at a time.
 
+Each phase also updates [architecture.md](architecture.md) in the same branch as its code: the
+diagram's `done` and `planned` styling, the status table, and the current-state line at the
+top. A phase is not finished until that file says it is.
+
 **Phase 0: Scaffold.** Module init, Compose (3 Kafka brokers, Redis with `--appendonly yes`,
 Postgres), env config, `log/slog` JSON, Makefile. Every binary gets `/healthz`, `/readyz`,
 `/metrics` and SIGTERM handling from the first commit, not Phase 8. Prometheus scrapes and

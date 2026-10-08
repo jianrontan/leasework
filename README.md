@@ -48,28 +48,12 @@ fenced handlers, effectively-once outcomes.
 
 ## Architecture
 
-```
-POST /jobs --tx--> [jobs row] + [outbox row]
-                        |
-                   scheduler (relay loop)
-                        |
-                   Kafka jobs.ready (12 partitions, RF=3)
-                        |
-                   worker: claim -> fence token -> heartbeat -> execute
-                        |
-                   fenced write to Postgres
-                        |
-                   commit offset   <- last, deliberately
-```
+Three long-running Go programs (`api`, `scheduler`, `worker`) and a one-shot `migrate`, with
+Postgres as the only source of truth, Kafka for delivery, and Prometheus and Grafana for
+monitoring. Redis (leases and fencing) and Kubernetes arrive in later phases.
 
-| Binary | Replicas | Role |
-|---|---|---|
-| `cmd/api` | N, stateless | HTTP: submit, get, list, cancel. Job + outbox in one transaction. |
-| `cmd/worker` | N, scales | Kafka consumer. Claim, heartbeat, execute, fenced write, commit. |
-| `cmd/scheduler` | **1** | Outbox relay, due-job promoter, lease reaper. |
-
-**Postgres is the only source of truth.** Wipe Redis and the system stays correct, just slower
-for a few seconds. Wipe Kafka and you replay from Postgres. Wipe Postgres and work is lost.
+**[docs/architecture.md](docs/architecture.md)** has the diagram, how a job flows end to end,
+and which parts are built versus planned. It is updated whenever a phase lands.
 
 ---
 
@@ -153,6 +137,8 @@ Environment variables, all prefixed `LEASEWORK_`:
 
 ## Documentation
 
+- [docs/architecture.md](docs/architecture.md): the diagram, the job flow, and what is built
+  versus planned.
 - [docs/design-decisions.md](docs/design-decisions.md): what was decided, what it beat, and
   what it costs.
 - [docs/plan.md](docs/plan.md): the phase sequence, from scaffold to Kubernetes autoscaling.
