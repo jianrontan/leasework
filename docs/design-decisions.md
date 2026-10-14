@@ -32,6 +32,25 @@ it in the submit path would make the entire premise dishonest.
 Cost: one extra table, one extra loop, and end-to-end latency now includes a relay hop
 (mitigated with `LISTEN/NOTIFY`, with a 1s tick as the fallback).
 
+## Kafka messages carry a versioned envelope
+
+Each message on `jobs.ready` carries everything a worker needs to decide what to run:
+`{"v": 1, "job_id": ..., "type": ..., "payload": ...}`. The job id is also the record key, so
+every message for one job lands on the same partition.
+
+The alternative was a bare message holding only the job id, with the worker looking up the type
+in Postgres. That costs a database read per job before the worker even knows whether it can
+handle it, and it leaves the stream meaningless to any other consumer, which would undercut one
+of the reasons Kafka is here at all.
+
+The envelope is built inside `EnqueueJob` and stored as the outbox payload, in the same
+transaction as the job row, so the copy in Kafka can never disagree with the row it describes.
+Postgres stays the source of truth: the worker still reads and writes the job row for its status
+and, from Phase 3, its fence.
+
+`v` lets the format change later without breaking workers that are mid-deploy. A worker that sees
+a version it does not understand fails loudly instead of guessing.
+
 ## Leases are fenced
 
 A lease TTL alone does not prevent double execution. It narrows the window, and it leaves the

@@ -137,6 +137,12 @@ retry, no DLQ. One Grafana panel showing jobs/sec.
 code. Idempotency-Key backed by the unique constraint: replay returns the existing job id,
 same key with a different body returns 409. `GET /jobs/{id}`, list with pagination.
 
+Kafka messages get a versioned envelope, `{"v": 1, "job_id", "type", "payload"}`, built in
+`EnqueueJob` and stored as the outbox payload, so the relay keeps publishing it unchanged. Today
+the message carries only the job id (as the key) and the raw payload, so a worker cannot tell
+which handler to run. The worker decodes the envelope and fails loudly on a `v` it does not
+understand; dispatching on `type` arrives with real handlers in Phase 6.
+
 **Phase 3: Claim, lease, fence.** `claim.lua` (claim if unheld, set TTL, `INCR` fence, return
 token), `renew.lua` (extend only if token matches), `release.lua`. Worker loop: claim,
 heartbeat goroutine at TTL/3, execute under `context.WithTimeout`, fenced terminal write,
